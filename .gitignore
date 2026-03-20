@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Models (too large for GitHub)
+*.pt
+*.onnx
+models/
+
+# Runtime outputs
+*.db
+logs/entries/
+logs/exits/
+logs/snapshots/
+logs/events.log
+
+# InsightFace cache
+~/.insightface/
+
+# OS
+.DS_Store
