@@ -1,5 +1,5 @@
 {
-  "video_source": "sample_video.mp4",
+  "video_source": "videos/record_20250620_184049.mp4",
   "rtsp_url": "rtsp://your_camera_ip:554/stream",
   "use_rtsp": false,
 
