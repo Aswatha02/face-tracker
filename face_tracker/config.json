@@ -1,26 +1,27 @@
 {
-  "video_source": "videos/record_20250620_184049.mp4",
+  "video_source": "videos/record_20250620_183903.mp4",
   "rtsp_url": "rtsp://your_camera_ip:554/stream",
   "use_rtsp": false,
 
   "detection": {
     "model_path": "yolov8n-face.pt",
-    "frame_skip": 3,
+    "frame_skip": 4,
     "confidence_threshold": 0.5,
-    "input_size": 640
+    "input_size": 640,
+    "min_face_size": 30
   },
 
   "recognition": {
     "model_name": "buffalo_l",
-    "similarity_threshold": 0.55,
+    "similarity_threshold": 0.92,
     "embedding_size": 512
   },
 
   "tracking": {
-    "max_age": 30,
-    "min_hits": 2,
+    "max_age": 15,
+    "min_hits": 3,
     "iou_threshold": 0.3,
-    "exit_timeout_frames": 45
+    "exit_timeout_frames": 60
   },
 
   "logging": {
@@ -29,7 +30,7 @@
     "exits_dir": "logs/exits",
     "snapshots_dir": "logs/snapshots",
     "image_format": "jpg",
-    "log_level": "INFO"
+    "log_level": "DEBUG"
   },
 
   "database": {

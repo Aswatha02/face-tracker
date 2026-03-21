@@ -54,15 +54,16 @@ def run(config_path: str = "config.json"):
     embedder = FaceEmbedder(config)
     tracker  = FaceTracker(config)
     registry = FaceRegistry(config, db, embedder)
-    ev_log   = EventLogger(config, db)
+    ev_log   = EventLogger(config, db, registry=registry)
 
     # ── Video source ─────────────────────────────────────────────────────────
-    cap = get_video_source(config)
+    cap  = get_video_source(config)
     show = config["display"]["show_video"]
 
     fps_counter = 0
-    fps_timer = time.time()
+    fps_timer   = time.time()
     display_fps = 0.0
+    frame       = None
 
     logger.info("Processing started. Press 'q' to quit.")
 
@@ -76,40 +77,65 @@ def run(config_path: str = "config.json"):
             # ── Detection ────────────────────────────────────────────────────
             detections = detector.detect(frame)
 
-            # ── Tracking ─────────────────────────────────────────────────────
-            tracks = tracker.update(detections, frame)
+            # ── Embed each detection for DeepSort ────────────────────────────
+            det_embeddings = []
+            for (x1, y1, x2, y2, conf) in detections:
+                face_crop = crop_face(frame, (x1, y1, x2, y2))
+                emb = embedder.get_embedding(face_crop)
+                det_embeddings.append(
+                    emb if emb is not None
+                    else np.zeros(512, dtype=np.float32)
+                )
 
-            # ── Embedding + Registry ─────────────────────────────────────────
+            # ── Tracking ─────────────────────────────────────────────────────
+            tracks = tracker.update(detections, frame, det_embeddings)
+
+            # ── Registry: match each track to a face ID ───────────────────────
             enriched_tracks = []
             for t in tracks:
-                bbox = t["bbox"]
+                bbox      = t["bbox"]
                 face_crop = crop_face(frame, bbox)
                 embedding = embedder.get_embedding(face_crop)
 
                 if embedding is None:
-                    continue  # skip if InsightFace can't find a face in crop
+                    continue
 
                 face_id, is_new = registry.identify(embedding)
+
+                # Keep rolling average fresh every frame face is visible
+                if not is_new:
+                    registry.update_track_embedding(face_id, embedding)
+
                 enriched_tracks.append({
                     **t,
                     "face_id": face_id,
-                    "is_new": is_new
+                    "is_new":  is_new
                 })
 
             # ── Entry / Exit logging ─────────────────────────────────────────
             ev_log.update(frame, enriched_tracks)
 
-            # ── FPS calc ─────────────────────────────────────────────────────
+            # ── FPS ───────────────────────────────────────────────────────────
             fps_counter += 1
             if time.time() - fps_timer >= 1.0:
                 display_fps = fps_counter / (time.time() - fps_timer)
                 fps_counter = 0
-                fps_timer = time.time()
+                fps_timer   = time.time()
 
             # ── Display ──────────────────────────────────────────────────────
             if show:
                 unique_count = db.get_unique_visitor_count()
-                vis_frame = draw_overlay(frame, enriched_tracks, unique_count, display_fps)
+                vis_frame    = draw_overlay(
+                    frame, enriched_tracks, unique_count, display_fps
+                )
+                # Fit to screen — max 1280px wide
+                h_f, w_f = vis_frame.shape[:2]
+                if w_f > 1280:
+                    scale     = 1280 / w_f
+                    vis_frame = cv2.resize(
+                        vis_frame, (1280, int(h_f * scale)),
+                        interpolation=cv2.INTER_LINEAR
+                    )
                 cv2.imshow(config["display"]["window_name"], vis_frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     logger.info("User pressed Q — stopping.")
@@ -119,13 +145,14 @@ def run(config_path: str = "config.json"):
         logger.info("Interrupted by user (Ctrl+C)")
 
     finally:
-        # Flush remaining active faces as exits
-        ev_log.flush_all_exits(frame if ret else np.zeros((480, 640, 3), dtype=np.uint8))
+        fallback = frame if (frame is not None) else np.zeros(
+            (480, 640, 3), dtype=np.uint8
+        )
+        ev_log.flush_all_exits(fallback)
         cap.release()
         if show:
             cv2.destroyAllWindows()
 
-        # ── Final summary ─────────────────────────────────────────────────────
         summary = db.get_summary()
         logger.info("=" * 60)
         logger.info("SESSION SUMMARY")

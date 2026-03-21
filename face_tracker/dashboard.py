@@ -1,8 +1,8 @@
 """
 dashboard.py
-Optional web dashboard using Flask + SocketIO.
-Shows live visitor count, recent entry/exit events, and face thumbnails.
+Real-time face tracker dashboard — Flask + SocketIO.
 Run alongside main.py:  python dashboard.py
+Open: http://localhost:5050
 """
 
 import os
@@ -10,16 +10,15 @@ import json
 import base64
 import sqlite3
 from datetime import datetime
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string
 from flask_socketio import SocketIO
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "face_tracker_secret"
-socketio = SocketIO(app, cors_allowed_origins="*")
+app.config["SECRET_KEY"] = "face_tracker_2026"
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 with open("config.json") as f:
     CONFIG = json.load(f)
-
 DB_PATH = CONFIG["database"]["path"]
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -30,212 +29,405 @@ def query_db(sql, args=()):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute(sql, args).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in conn.execute(sql, args).fetchall()]
     finally:
         conn.close()
 
-
-def get_summary():
-    rows = query_db("SELECT * FROM visitor_summary WHERE id=1")
-    if not rows:
-        return {"unique_visitors": 0, "last_updated": None}
-    return rows[0]
-
-
-def get_recent_events(limit=20):
-    return query_db(
-        "SELECT * FROM events ORDER BY timestamp DESC LIMIT ?", (limit,)
-    )
-
-
 def img_to_b64(path):
-    """Convert a local image file to base64 string for embedding in HTML."""
     if not path or not os.path.exists(path):
         return None
     with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+        return base64.b64encode(f.read()).decode()
 
-
-# ── HTML template ─────────────────────────────────────────────────────────────
+# ── HTML ──────────────────────────────────────────────────────────────────────
 
 HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Face Tracker Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Face Tracker — Live Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
 <style>
+  :root {
+    --bg:      #080c10;
+    --surface: #0d1117;
+    --card:    #111820;
+    --border:  #1e2d3d;
+    --accent:  #00d4ff;
+    --green:   #00ff88;
+    --amber:   #ffb700;
+    --red:     #ff4d6d;
+    --text:    #cdd9e5;
+    --muted:   #4a6070;
+    --font-display: 'Syne', sans-serif;
+    --font-mono:    'JetBrains Mono', monospace;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #0f1117; color: #e8e8e8; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Animated grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrap { position: relative; z-index: 1; padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+  /* Header */
   header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 18px 32px; background: #161b22; border-bottom: 1px solid #30363d;
+    margin-bottom: 28px; padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
   }
-  header h1 { font-size: 18px; font-weight: 600; color: #fff; }
-  .live-dot {
-    width: 10px; height: 10px; border-radius: 50%; background: #2ea043;
-    display: inline-block; margin-right: 8px;
-    animation: pulse 1.5s ease-in-out infinite;
+  .logo {
+    font-family: var(--font-display);
+    font-size: 22px; font-weight: 800;
+    letter-spacing: -.02em;
+    color: #fff;
   }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .logo span { color: var(--accent); }
+  .live-pill {
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(0,255,136,.08); border: 1px solid rgba(0,255,136,.2);
+    border-radius: 100px; padding: 6px 14px;
+    font-size: 12px; font-weight: 700; color: var(--green);
+    letter-spacing: .1em;
+  }
+  .pulse {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.8)} }
 
-  .stats {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 16px; padding: 24px 32px;
+  /* Stat cards */
+  .stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; margin-bottom: 24px; }
+  .stat {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 24px;
+    position: relative; overflow: hidden;
+    transition: border-color .2s;
   }
-  .stat-card {
-    background: #161b22; border: 1px solid #30363d; border-radius: 10px;
-    padding: 20px; text-align: center;
+  .stat:hover { border-color: var(--accent); }
+  .stat::after {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 2px;
   }
-  .stat-card .num { font-size: 42px; font-weight: 700; color: #58a6ff; }
-  .stat-card .label { font-size: 13px; color: #8b949e; margin-top: 6px; }
+  .stat.blue::after  { background: var(--accent); }
+  .stat.green::after { background: var(--green); }
+  .stat.amber::after { background: var(--amber); }
+  .stat.red::after   { background: var(--red); }
 
-  .section { padding: 0 32px 32px; }
-  .section h2 { font-size: 15px; font-weight: 600; color: #8b949e;
-    text-transform: uppercase; letter-spacing: .08em; margin-bottom: 14px; }
-
-  .events-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .events-table th {
-    text-align: left; padding: 8px 12px; border-bottom: 1px solid #30363d;
-    color: #8b949e; font-weight: 500;
+  .stat-label {
+    font-size: 10px; letter-spacing: .15em; font-weight: 700;
+    color: var(--muted); text-transform: uppercase; margin-bottom: 10px;
   }
-  .events-table td { padding: 9px 12px; border-bottom: 1px solid #1c2128; }
-  .events-table tr:hover td { background: #161b22; }
+  .stat-value {
+    font-family: var(--font-display);
+    font-size: 44px; font-weight: 800; line-height: 1;
+    color: #fff;
+    transition: transform .15s;
+  }
+  .stat-value.bump { animation: bump .25s ease; }
+  @keyframes bump { 0%{transform:scale(1.15)} 100%{transform:scale(1)} }
+  .stat-sub { font-size: 11px; color: var(--muted); margin-top: 8px; }
+
+  /* Main grid */
+  .grid { display: grid; grid-template-columns: 1fr 380px; gap: 20px; }
+
+  /* Panel */
+  .panel {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden;
+  }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+  }
+  .panel-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted);
+  }
   .badge {
-    display: inline-block; padding: 2px 10px; border-radius: 20px;
-    font-size: 11px; font-weight: 600;
+    font-size: 11px; padding: 3px 10px;
+    border-radius: 100px; font-weight: 700;
   }
-  .badge.entry { background: #0d4429; color: #2ea043; }
-  .badge.exit  { background: #3d1a1a; color: #f85149; }
+  .badge-blue { background: rgba(0,212,255,.12); color: var(--accent); }
+  .badge-green { background: rgba(0,255,136,.12); color: var(--green); }
 
-  .thumbs { display: flex; flex-wrap: wrap; gap: 12px; }
-  .thumb {
-    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-    overflow: hidden; width: 110px; text-align: center;
+  /* Events table */
+  .events-wrap { overflow-y: auto; max-height: 420px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    padding: 10px 20px; text-align: left;
+    font-size: 10px; letter-spacing: .1em; color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: var(--card); z-index: 2;
   }
-  .thumb img { width: 110px; height: 110px; object-fit: cover; }
-  .thumb .caption {
-    font-size: 11px; color: #8b949e; padding: 6px 4px; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap;
+  td { padding: 10px 20px; border-bottom: 1px solid rgba(255,255,255,.03); }
+  tr:hover td { background: rgba(255,255,255,.02); }
+  tr.new-row { animation: slideIn .3s ease; }
+  @keyframes slideIn { from{opacity:0;transform:translateX(-8px)} to{opacity:1;transform:none} }
+
+  .tag {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 4px; font-size: 10px; font-weight: 700;
+    letter-spacing: .08em;
   }
-  .thumb .no-img {
-    width: 110px; height: 110px; display: flex; align-items: center;
-    justify-content: center; color: #30363d; font-size: 32px;
+  .tag-entry { background: rgba(0,255,136,.12); color: var(--green); }
+  .tag-exit  { background: rgba(255,77,109,.12);  color: var(--red); }
+
+  .face-id {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--accent); letter-spacing: .05em;
   }
-  .updated { font-size: 12px; color: #444d56; text-align: right;
-    padding: 0 32px 16px; }
+
+  /* Thumbnails */
+  .thumbs-wrap { padding: 16px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; max-height: 500px; }
+  .thumb-row {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px;
+    animation: slideIn .3s ease;
+    transition: border-color .2s;
+  }
+  .thumb-row:hover { border-color: var(--accent); }
+  .thumb-img {
+    width: 56px; height: 56px; border-radius: 6px;
+    object-fit: cover; background: var(--border); flex-shrink: 0;
+    border: 1px solid var(--border);
+  }
+  .thumb-no-img {
+    width: 56px; height: 56px; border-radius: 6px;
+    background: var(--border); display: flex; align-items: center;
+    justify-content: center; color: var(--muted); font-size: 22px; flex-shrink: 0;
+  }
+  .thumb-info { flex: 1; min-width: 0; }
+  .thumb-id { font-size: 12px; color: var(--accent); font-weight: 700; }
+  .thumb-time { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .thumb-badge { margin-top: 5px; }
+
+  /* Footer */
+  footer {
+    margin-top: 24px; padding-top: 16px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; color: var(--muted);
+  }
+  .footer-link { color: var(--accent); text-decoration: none; }
+  #last-update { color: var(--muted); font-size: 11px; }
+
+  @media (max-width: 900px) {
+    .stats { grid-template-columns: repeat(2,1fr); }
+    .grid  { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1><span class="live-dot"></span>Face Tracker Dashboard</h1>
-  <span style="font-size:13px;color:#8b949e;" id="last-update">Loading...</span>
-</header>
+<div class="wrap">
 
-<div class="stats" id="stats">
-  <div class="stat-card"><div class="num" id="s-unique">—</div><div class="label">Unique Visitors</div></div>
-  <div class="stat-card"><div class="num" id="s-entries">—</div><div class="label">Total Entries</div></div>
-  <div class="stat-card"><div class="num" id="s-exits">—</div><div class="label">Total Exits</div></div>
-  <div class="stat-card"><div class="num" id="s-active">—</div><div class="label">Currently Active</div></div>
-</div>
+  <header>
+    <div class="logo">FACE<span>TRACKER</span> <span style="font-size:13px;font-weight:400;color:var(--muted)">/ live dashboard</span></div>
+    <div style="display:flex;gap:12px;align-items:center">
+      <span id="last-update">connecting...</span>
+      <div class="live-pill"><div class="pulse"></div>LIVE</div>
+    </div>
+  </header>
 
-<div class="section">
-  <h2>Recent Events</h2>
-  <table class="events-table">
-    <thead>
-      <tr>
-        <th>Time</th><th>Face ID</th><th>Event</th><th>Track ID</th>
-      </tr>
-    </thead>
-    <tbody id="events-body">
-      <tr><td colspan="4" style="color:#444;text-align:center;padding:24px">
-        Waiting for data...
-      </td></tr>
-    </tbody>
-  </table>
-</div>
-
-<div class="section">
-  <h2>Face Thumbnails (latest entries)</h2>
-  <div class="thumbs" id="thumbs">
-    <div style="color:#444;font-size:13px">No faces logged yet.</div>
+  <div class="stats">
+    <div class="stat blue">
+      <div class="stat-label">Unique Visitors</div>
+      <div class="stat-value" id="s-unique">—</div>
+      <div class="stat-sub">distinct faces registered</div>
+    </div>
+    <div class="stat green">
+      <div class="stat-label">Active Now</div>
+      <div class="stat-value" id="s-active">—</div>
+      <div class="stat-sub">faces in frame</div>
+    </div>
+    <div class="stat amber">
+      <div class="stat-label">Total Entries</div>
+      <div class="stat-value" id="s-entries">—</div>
+      <div class="stat-sub">entry events logged</div>
+    </div>
+    <div class="stat red">
+      <div class="stat-label">Total Exits</div>
+      <div class="stat-value" id="s-exits">—</div>
+      <div class="stat-sub">exit events logged</div>
+    </div>
   </div>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">Event Log</div>
+        <div class="badge badge-blue" id="event-count">0 events</div>
+      </div>
+      <div class="events-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Face ID</th>
+              <th>Event</th>
+              <th>Track</th>
+            </tr>
+          </thead>
+          <tbody id="events-body">
+            <tr><td colspan="4" style="text-align:center;padding:32px;color:var(--muted)">
+              Waiting for events...
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">Face Thumbnails</div>
+        <div class="badge badge-green" id="thumb-count">0 faces</div>
+      </div>
+      <div class="thumbs-wrap" id="thumbs">
+        <div style="text-align:center;padding:32px;color:var(--muted);font-size:12px">
+          No faces logged yet.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <div>Face Tracker — Katomaran Hackathon 2026</div>
+    <div>Built with YOLOv8 + ArcFace + DeepSort + SQLite</div>
+  </footer>
+
 </div>
 
 <script>
 const socket = io();
+let prevUnique = 0;
 
-socket.on("update", (data) => {
+function bump(id) {
+  const el = document.getElementById(id);
+  el.classList.remove('bump');
+  void el.offsetWidth;
+  el.classList.add('bump');
+}
+
+function fmt(ts) {
+  if (!ts) return '—';
+  return ts.replace('T',' ').slice(0,19);
+}
+
+socket.on('update', data => {
   // Stats
-  document.getElementById("s-unique").textContent  = data.unique_visitors ?? "—";
-  document.getElementById("s-entries").textContent = data.total_entries  ?? "—";
-  document.getElementById("s-exits").textContent   = data.total_exits    ?? "—";
-  document.getElementById("s-active").textContent  = data.active_faces   ?? "—";
-  document.getElementById("last-update").textContent =
-    "Updated: " + new Date().toLocaleTimeString();
+  const unique = data.unique_visitors ?? 0;
+  if (unique !== prevUnique) { bump('s-unique'); prevUnique = unique; }
+  document.getElementById('s-unique').textContent  = unique;
+  document.getElementById('s-active').textContent  = data.active_faces ?? 0;
+  document.getElementById('s-entries').textContent = data.total_entries ?? 0;
+  document.getElementById('s-exits').textContent   = data.total_exits ?? 0;
+  document.getElementById('last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  document.getElementById('event-count').textContent = (data.total_events ?? 0) + ' events';
 
-  // Events table
-  const tbody = document.getElementById("events-body");
-  if (data.events && data.events.length) {
-    tbody.innerHTML = data.events.map(e => `
-      <tr>
-        <td>${e.timestamp.replace("T"," ").slice(0,19)}</td>
-        <td style="font-family:monospace">${e.face_id}</td>
-        <td><span class="badge ${e.event_type}">${e.event_type}</span></td>
-        <td>${e.track_id ?? "—"}</td>
-      </tr>`).join("");
+  // Events
+  if (data.events?.length) {
+    document.getElementById('events-body').innerHTML = data.events.map((e,i) => `
+      <tr class="${i===0?'new-row':''}">
+        <td style="color:var(--muted)">${fmt(e.timestamp)}</td>
+        <td><span class="face-id">${e.face_id}</span></td>
+        <td><span class="tag tag-${e.event_type}">${e.event_type.toUpperCase()}</span></td>
+        <td style="color:var(--muted)">${e.track_id ?? '—'}</td>
+      </tr>`).join('');
   }
 
   // Thumbnails
-  const thumbs = document.getElementById("thumbs");
-  if (data.thumbnails && data.thumbnails.length) {
-    thumbs.innerHTML = data.thumbnails.map(t => `
-      <div class="thumb">
+  if (data.thumbnails?.length) {
+    document.getElementById('thumb-count').textContent = data.thumbnails.length + ' faces';
+    document.getElementById('thumbs').innerHTML = data.thumbnails.map(t => `
+      <div class="thumb-row">
         ${t.b64
-          ? `<img src="data:image/jpeg;base64,${t.b64}" alt="${t.face_id}">`
-          : `<div class="no-img">👤</div>`}
-        <div class="caption">${t.face_id}</div>
-      </div>`).join("");
+          ? `<img class="thumb-img" src="data:image/jpeg;base64,${t.b64}">`
+          : `<div class="thumb-no-img">👤</div>`}
+        <div class="thumb-info">
+          <div class="thumb-id">${t.face_id}</div>
+          <div class="thumb-time">${fmt(t.timestamp)}</div>
+          <div class="thumb-badge">
+            <span class="tag tag-${t.event_type}">${t.event_type.toUpperCase()}</span>
+          </div>
+        </div>
+      </div>`).join('');
   }
 });
 
-// Poll every 2 seconds as fallback
-setInterval(() => socket.emit("request_update"), 2000);
-socket.emit("request_update");
+socket.on('connect', () => {
+  document.getElementById('last-update').textContent = 'Connected';
+  socket.emit('request_update');
+});
+
+setInterval(() => socket.emit('request_update'), 2000);
 </script>
 </body>
 </html>
 """
 
-# ── Socket events ─────────────────────────────────────────────────────────────
+# ── SocketIO events ───────────────────────────────────────────────────────────
 
 @socketio.on("request_update")
 def send_update():
-    summary   = get_summary()
-    events    = get_recent_events(20)
-    entries   = [e for e in events if e["event_type"] == "entry"]
-    exits_ev  = [e for e in events if e["event_type"] == "exit"]
+    rows    = query_db("SELECT * FROM visitor_summary WHERE id=1")
+    summary = rows[0] if rows else {"unique_visitors": 0}
 
-    # Faces currently active = in entries but no matching exit after
-    active_ids = set(e["face_id"] for e in entries) - set(e["face_id"] for e in exits_ev)
+    events = query_db(
+        "SELECT * FROM events ORDER BY timestamp DESC LIMIT 30"
+    )
+    entries = [e for e in events if e["event_type"] == "entry"]
+    exits   = [e for e in events if e["event_type"] == "exit"]
 
-    # Thumbnails from recent entry images
+    # Active = entry faces with no subsequent exit
+    entered_ids = {e["face_id"] for e in entries}
+    exited_ids  = {e["face_id"] for e in exits}
+    active      = len(entered_ids - exited_ids)
+
+    # Thumbnails — latest entry image per unique face
+    seen = set()
     thumbnails = []
-    for e in events[:12]:
-        if e["event_type"] == "entry":
-            b64 = img_to_b64(e.get("image_path"))
-            thumbnails.append({"face_id": e["face_id"], "b64": b64})
+    for e in events:
+        if e["face_id"] not in seen:
+            seen.add(e["face_id"])
+            thumbnails.append({
+                "face_id":    e["face_id"],
+                "b64":        img_to_b64(e.get("image_path")),
+                "timestamp":  e["timestamp"],
+                "event_type": e["event_type"]
+            })
+        if len(thumbnails) >= 12:
+            break
 
     socketio.emit("update", {
         "unique_visitors": summary.get("unique_visitors", 0),
         "total_entries":   len(entries),
-        "total_exits":     len(exits_ev),
-        "active_faces":    len(active_ids),
-        "events":          events,
+        "total_exits":     len(exits),
+        "total_events":    len(events),
+        "active_faces":    active,
+        "events":          events[:20],
         "thumbnails":      thumbnails,
-        "last_updated":    summary.get("last_updated")
     })
 
 
@@ -246,21 +438,21 @@ def index():
 
 @app.route("/api/summary")
 def api_summary():
-    summary = get_summary()
-    events  = get_recent_events(100)
+    from flask import jsonify
+    rows    = query_db("SELECT * FROM visitor_summary WHERE id=1")
+    summary = rows[0] if rows else {"unique_visitors": 0}
+    events  = query_db("SELECT * FROM events")
     return jsonify({
         **summary,
-        "total_events": len(events),
+        "total_events":  len(events),
         "total_entries": sum(1 for e in events if e["event_type"] == "entry"),
         "total_exits":   sum(1 for e in events if e["event_type"] == "exit"),
     })
 
 
-@app.route("/api/events")
-def api_events():
-    return jsonify(get_recent_events(50))
-
-
 if __name__ == "__main__":
-    print("\n🌐 Dashboard running at: http://localhost:5050\n")
+    print("\n" + "="*50)
+    print("  Face Tracker Dashboard")
+    print("  http://localhost:5050")
+    print("="*50 + "\n")
     socketio.run(app, host="0.0.0.0", port=5050, debug=False)
