@@ -1,8 +1,8 @@
 """
 event_logger.py
 Manages entry and exit events.
-Calls registry.mark_exited() when a face leaves so registry
-applies cooldown and prevents false re-matches.
+Fires exactly one entry and one exit event per face visit.
+On exit: notifies registry (cooldown) AND detector (spatial cooldown).
 """
 
 import cv2
@@ -14,9 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 class EventLogger:
-    def __init__(self, config: dict, db: Database, registry=None):
+    def __init__(self, config: dict, db: Database,
+                 registry=None, detector=None):
         self.db           = db
-        self.registry     = registry   # injected so we can call mark_exited
+        self.registry     = registry
+        self.detector     = detector   # for spatial exit zone
         log_cfg           = config["logging"]
         self.entries_dir  = log_cfg["entries_dir"]
         self.exits_dir    = log_cfg["exits_dir"]
@@ -35,6 +37,27 @@ class EventLogger:
         if gray.var() < 100:
             return False
         return True
+
+    def _fire_exit(self, fid: str, state: dict, frame):
+        """Fire exit event, notify registry and detector."""
+        face_crop = crop_face(frame, state["bbox"])
+        img_path  = save_face_image(
+            face_crop, self.exits_dir, fid, "exit", self.img_fmt
+        ) if self._is_valid_crop(face_crop) else None
+
+        self.db.log_event(fid, "exit", img_path, state["track_id"])
+        logger.info(
+            f"EXIT  | face={fid} | track={state['track_id']} | img={img_path}"
+        )
+
+        # Tell registry to block this face for cooldown period
+        if self.registry:
+            self.registry.mark_exited(fid)
+
+        # Tell detector to block this spatial area for 2 seconds
+        # This prevents floor tiles from being detected where person stood
+        if self.detector:
+            self.detector.register_exit_zone(state["bbox"])
 
     def update(self, frame, active_tracks: list):
         current_face_ids = set()
@@ -62,7 +85,7 @@ class EventLogger:
                 self._active[fid]["bbox"]          = bbox
                 self._active[fid]["track_id"]      = tid
 
-        # Exit timeout logic
+        # Exit timeout
         to_exit = []
         for fid, state in self._active.items():
             if fid not in current_face_ids:
@@ -71,32 +94,12 @@ class EventLogger:
                     to_exit.append(fid)
 
         for fid in to_exit:
-            state     = self._active.pop(fid)
-            # ── EXIT ──────────────────────────────────────────────────────
-            face_crop = crop_face(frame, state["bbox"])
-            img_path  = save_face_image(
-                face_crop, self.exits_dir, fid, "exit", self.img_fmt
-            ) if self._is_valid_crop(face_crop) else None
-
-            self.db.log_event(fid, "exit", img_path, state["track_id"])
-            logger.info(
-                f"EXIT  | face={fid} | track={state['track_id']} | img={img_path}"
-            )
-
-            # ── Tell registry to block this face from matching ─────────────
-            if self.registry:
-                self.registry.mark_exited(fid)
+            state = self._active.pop(fid)
+            self._fire_exit(fid, state, frame)
 
     def flush_all_exits(self, frame):
         for fid, state in list(self._active.items()):
-            face_crop = crop_face(frame, state["bbox"])
-            img_path  = save_face_image(
-                face_crop, self.exits_dir, fid, "exit", self.img_fmt
-            ) if self._is_valid_crop(face_crop) else None
-            self.db.log_event(fid, "exit", img_path, state["track_id"])
-            logger.info(f"EXIT(flush) | face={fid} | track={state['track_id']}")
-            if self.registry:
-                self.registry.mark_exited(fid)
+            self._fire_exit(fid, state, frame)
         self._active.clear()
 
     @property

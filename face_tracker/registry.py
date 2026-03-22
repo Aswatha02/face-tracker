@@ -1,12 +1,11 @@
 """
 registry.py
-In-memory face registry with embedding averaging and exit cooldown.
-
-Key fix: when a face exits, it enters a COOLDOWN period during which
-it cannot be matched. This prevents new people from being incorrectly
-identified as someone who just left the frame.
-
-After cooldown expires, the face CAN be re-matched (genuine re-entry).
+In-memory face registry with:
+- Track continuity: DeepSort track ID → face ID mapping persists
+  so the same person never gets two IDs while tracked
+- Embedding averaging (rolling window of 15 frames)
+- Exit cooldown (30s blocks re-matching after exit)
+- Per-frame active set (same person can't appear twice in one frame)
 """
 
 import uuid
@@ -20,8 +19,8 @@ from embedder import FaceEmbedder
 
 logger = logging.getLogger(__name__)
 
-ROLLING_WINDOW   = 10   # frames to average per face
-EXIT_COOLDOWN_S  = 30   # seconds to block re-matching after exit
+ROLLING_WINDOW  = 15
+EXIT_COOLDOWN_S = 30
 
 
 class FaceRegistry:
@@ -30,15 +29,20 @@ class FaceRegistry:
         self.db        = db
         self.embedder  = embedder
 
-        # Stable averaged embeddings used for matching
+        # face_id → averaged embedding
         self._known: dict[str, np.ndarray] = {}
 
-        # Rolling buffer of recent embeddings per face
+        # face_id → list of recent embeddings
         self._buffers: dict[str, list] = defaultdict(list)
 
-        # Cooldown: { face_id: timestamp_of_exit }
-        # Face cannot be matched until EXIT_COOLDOWN_S seconds have passed
+        # face_id → exit timestamp
         self._exit_cooldown: dict[str, float] = {}
+
+        # track_id → face_id  (continuity: same DeepSort track = same person)
+        self._track_to_face: dict[int, str] = {}
+
+        # Per-frame active set (same person can't appear twice)
+        self._active_in_frame: set = set()
 
         self._load_from_db()
 
@@ -58,57 +62,70 @@ class FaceRegistry:
         logger.info(f"Loaded {loaded} known face(s) from DB into memory")
 
     def mark_exited(self, face_id: str):
-        """
-        Call this when a face exits the frame.
-        Puts the face into cooldown — prevents false matches for EXIT_COOLDOWN_S seconds.
-        """
         self._exit_cooldown[face_id] = time.time()
+        # Clear track mapping so re-entry gets fresh matching
+        self._track_to_face = {
+            tid: fid for tid, fid in self._track_to_face.items()
+            if fid != face_id
+        }
         logger.info(
-            f"Face {face_id} entered cooldown for {EXIT_COOLDOWN_S}s "
-            f"— will not be matched until cooldown expires"
+            f"Face {face_id} entered cooldown ({EXIT_COOLDOWN_S}s)"
         )
 
     def _is_in_cooldown(self, face_id: str) -> bool:
         if face_id not in self._exit_cooldown:
             return False
-        elapsed = time.time() - self._exit_cooldown[face_id]
-        if elapsed < EXIT_COOLDOWN_S:
+        if time.time() - self._exit_cooldown[face_id] < EXIT_COOLDOWN_S:
             return True
-        # Cooldown expired — allow re-matching
         del self._exit_cooldown[face_id]
-        logger.info(f"Face {face_id} cooldown expired — eligible for re-entry")
+        logger.info(f"Face {face_id} cooldown expired")
         return False
 
-    def _update_average(self, face_id: str, new_embedding: np.ndarray):
+    def _update_average(self, face_id: str, embedding: np.ndarray):
         buf = self._buffers[face_id]
-        buf.append(new_embedding)
+        buf.append(embedding)
         if len(buf) > ROLLING_WINDOW:
             buf.pop(0)
-        averaged = np.mean(buf, axis=0)
-        averaged = averaged / (np.linalg.norm(averaged) + 1e-8)
-        self._known[face_id] = averaged
+        avg = np.mean(buf, axis=0)
+        avg = avg / (np.linalg.norm(avg) + 1e-8)
+        self._known[face_id] = avg
         if len(buf) % 5 == 0:
-            emb_bytes = self.embedder.embedding_to_bytes(averaged)
             with self.db._get_conn() as conn:
                 conn.execute(
                     "UPDATE faces SET embedding = ? WHERE id = ?",
-                    (emb_bytes, face_id)
+                    (self.embedder.embedding_to_bytes(avg), face_id)
                 )
 
-    def identify(self, embedding: np.ndarray) -> tuple[str, bool]:
+    def identify(self, embedding: np.ndarray,
+                 track_id: int = None) -> tuple[str, bool]:
         """
-        Match embedding against known faces (excluding those in cooldown).
-        Returns (face_id, is_new).
+        Match embedding to a face ID.
+
+        Track continuity: if we've seen this DeepSort track_id before,
+        return the same face_id immediately — no embedding comparison needed.
+        This prevents the same person getting two IDs while still tracked.
         """
+        # ── Track continuity check ────────────────────────────────────────
+        if track_id is not None and track_id in self._track_to_face:
+            face_id = self._track_to_face[track_id]
+            # Make sure this face isn't in cooldown (would mean it was wrong)
+            if not self._is_in_cooldown(face_id):
+                self._update_average(face_id, embedding)
+                self._active_in_frame.add(face_id)
+                logger.debug(
+                    f"Track {track_id} → face {face_id} (continuity)"
+                )
+                return face_id, False
+
+        # ── Embedding matching ────────────────────────────────────────────
         best_id    = None
         best_score = -1.0
 
         for fid, known_emb in self._known.items():
-            # Skip faces in exit cooldown
             if self._is_in_cooldown(fid):
-                logger.debug(f"Skipping {fid} — in exit cooldown")
                 continue
-
+            if fid in self._active_in_frame:
+                continue
             score = cosine_similarity(embedding, known_emb)
             if score > best_score:
                 best_score = score
@@ -116,25 +133,35 @@ class FaceRegistry:
 
         if best_score >= self.threshold and best_id is not None:
             logger.info(
-                f"Recognised face {best_id} "
-                f"(similarity={best_score:.3f}, buffer={len(self._buffers[best_id])})"
+                f"Recognised {best_id} "
+                f"(sim={best_score:.3f}, buf={len(self._buffers[best_id])})"
             )
             self.db.update_face_last_seen(best_id)
             self._update_average(best_id, embedding)
+            self._active_in_frame.add(best_id)
+            if track_id is not None:
+                self._track_to_face[track_id] = best_id
             return best_id, False
 
-        # New face
-        new_id    = str(uuid.uuid4())[:8].upper()
+        # ── New face ──────────────────────────────────────────────────────
+        new_id = str(uuid.uuid4())[:8].upper()
         self._buffers[new_id].append(embedding)
         self._known[new_id] = embedding
-        emb_bytes = self.embedder.embedding_to_bytes(embedding)
-        self.db.register_face(new_id, emb_bytes)
-        logger.info(f"New face registered: {new_id} (best_score={best_score:.3f})")
+        self.db.register_face(new_id, self.embedder.embedding_to_bytes(embedding))
+        self._active_in_frame.add(new_id)
+        if track_id is not None:
+            self._track_to_face[new_id] = new_id
+            self._track_to_face[track_id] = new_id
+        logger.info(f"New face: {new_id} (best_score={best_score:.3f})")
         return new_id, True
 
     def update_track_embedding(self, face_id: str, embedding: np.ndarray):
         if face_id in self._known:
             self._update_average(face_id, embedding)
+
+    def reset_frame(self):
+        """Call at start of each frame."""
+        self._active_in_frame.clear()
 
     @property
     def known_count(self) -> int:
