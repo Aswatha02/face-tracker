@@ -1,13 +1,27 @@
-# Core
-ultralytics>=8.0.0
-insightface>=0.7.3
+# Face Detection
+ultralytics>=8.0.0          # YOLOv8 (includes YOLO class)
+
+# Face Recognition & Alignment
+insightface==0.2.1          # install with: pip install insightface==0.2.1 --only-binary :all:
+onnxruntime>=1.16.0         # loads ArcFace + landmark models directly
+
+# Tracking
 deep-sort-realtime>=1.3.2
+
+# Vision & ML
 opencv-python>=4.8.0
 numpy>=1.24.0
-onnxruntime>=1.16.0
+scikit-image>=0.19.0
 
-# DB / utils
-sqlite3-api>=2.0.1
+# Dashboard
+flask>=3.0.0
+flask-socketio>=5.3.6
+eventlet>=0.35.0
+
+# Build tools (required for insightface on Windows)
+cython
+wheel
+setuptools
 
 # Optional: GPU support
-# onnxruntime-gpu>=1.16.0   # uncomment if CUDA is available
+# onnxruntime-gpu>=1.16.0   # uncomment if CUDA available, remove onnxruntime above
