@@ -52,7 +52,7 @@ class EventLogger:
 
         # Tell registry to block this face for cooldown period
         if self.registry:
-            self.registry.mark_exited(fid)
+            self.registry.mark_exited(fid, bbox=state["bbox"])
 
         # Tell detector to block this spatial area for 2 seconds
         # This prevents floor tiles from being detected where person stood

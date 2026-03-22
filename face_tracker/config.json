@@ -11,8 +11,10 @@
   },
   "recognition": {
     "model_name": "buffalo_l",
-    "similarity_threshold": 0.84,
-    "embedding_size": 512
+    "similarity_threshold": 0.78,
+    "embedding_size": 512,
+    "exit_cooldown_s": 60,
+    "reid_threshold": 0.9
   },
   "tracking": {
     "max_age": 30,
