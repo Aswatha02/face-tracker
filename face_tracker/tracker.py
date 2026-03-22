@@ -23,34 +23,32 @@ class FaceTracker:
             max_age=self.max_age,
             n_init=self.min_hits,
             max_iou_distance=self.iou_threshold,
-            embedder=None  # we supply our own ArcFace embeddings
+            embedder=None,  # we supply our own ArcFace embeddings
+            half=True,                # if supported
+            bgr=True,
+            embedder_gpu=False
         )
         logger.info("DeepSort tracker ready")
 
     def update(self, detections: list, frame: np.ndarray,
-               embeddings: list = None) -> list:
-        """
-        Update tracker with new detections.
+           embeddings: list = None) -> list:
 
-        detections : list of (x1, y1, x2, y2, confidence)
-        embeddings : list of np.ndarray (one per detection) — our ArcFace vectors
-        Returns    : list of dicts { track_id, bbox, confidence }
-        """
         if not detections:
-            # Pass empty lists — DeepSort ages out missing tracks
-            tracks = self._tracker.update_tracks(
-                [], embeds=[], frame=frame
-            )
+            tracks = self._tracker.update_tracks([], embeds=[], frame=frame)
             return self._format_tracks(tracks)
 
-        # DeepSort expects [([x, y, w, h], conf, class_label), ...]
         ds_detections = []
-        for (x1, y1, x2, y2, conf) in detections:
+        for i, (x1, y1, x2, y2, conf) in enumerate(detections):
             w = x2 - x1
             h = y2 - y1
-            ds_detections.append(([x1, y1, w, h], conf, "face"))
 
-        # If no embeddings provided, use zero vectors as placeholders
+            # Attach index so we can recover embedding later
+            ds_detections.append((
+                [x1, y1, w, h],
+                conf,
+                i   # store detection index as "class"
+            ))
+
         if embeddings is None or len(embeddings) != len(detections):
             embeddings = [np.zeros(512, dtype=np.float32)] * len(detections)
 
@@ -59,17 +57,27 @@ class FaceTracker:
             embeds=embeddings,
             frame=frame
         )
-        return self._format_tracks(tracks)
 
+        return self._format_tracks(tracks)
     def _format_tracks(self, raw_tracks: list) -> list:
         result = []
+
         for track in raw_tracks:
             if not track.is_confirmed():
                 continue
+
             ltrb = track.to_ltrb()
+
+            # Recover detection index
+            det_idx = None
+            if hasattr(track, "det_class"):
+                det_idx = track.det_class
+
             result.append({
                 "track_id": track.track_id,
                 "bbox": (ltrb[0], ltrb[1], ltrb[2], ltrb[3]),
-                "confidence": track.det_conf if track.det_conf else 0.0
+                "confidence": track.det_conf if track.det_conf else 0.0,
+                "det_idx": det_idx   # 🔥 IMPORTANT
             })
+
         return result

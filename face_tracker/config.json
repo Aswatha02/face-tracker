@@ -4,23 +4,23 @@
   "use_rtsp": false,
   "detection": {
     "model_path": "yolov8s-face.pt",
-    "frame_skip": 2,
+    "frame_skip": 1,
     "confidence_threshold": 0.55,
-    "input_size": 640,
-    "min_face_size": 40
+    "input_size": 960,
+    "min_face_size": 37
   },
   "recognition": {
     "model_name": "buffalo_l",
-    "similarity_threshold": 0.78,
+    "similarity_threshold": 0.90,
     "embedding_size": 512,
-    "exit_cooldown_s": 60,
-    "reid_threshold": 0.9
+    "exit_cooldown_s": 3600,
+    "reid_threshold": 0.90
   },
   "tracking": {
-    "max_age": 30,
-    "min_hits": 2,
-    "iou_threshold": 0.35,
-    "exit_timeout_frames": 150
+    "max_age": 100,
+    "min_hits": 3,
+    "iou_threshold": 0.5,
+    "exit_timeout_frames": 45
   },
   "logging": {
     "log_file": "logs/events.log",

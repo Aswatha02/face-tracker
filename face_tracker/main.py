@@ -54,7 +54,7 @@ def run(config_path: str = "config.json"):
     tracker    = FaceTracker(config)
     registry   = FaceRegistry(config, db, embedder)
     ev_log     = EventLogger(config, db, registry=registry, detector=detector)
-    stabilizer = DetectionStabilizer(min_frames=3, position_tolerance=20)
+    stabilizer = DetectionStabilizer(min_frames=2, position_tolerance=20)
 
     cap   = get_video_source(config)
     show  = config["display"]["show_video"]
@@ -78,7 +78,7 @@ def run(config_path: str = "config.json"):
                 logger.info("End of stream. Stopping.")
                 break
 
-            # ── Reset per-frame state ─────────────────────────────────────
+            # ── Reset per-frame registry state ────────────────────────────
             registry.reset_frame()
 
             # ── Detection ─────────────────────────────────────────────────
@@ -87,31 +87,49 @@ def run(config_path: str = "config.json"):
             # ── Temporal stabilizer — kills tile false positives ──────────
             detections = stabilizer.update(detections)
 
-            # ── Embed detections for DeepSort ─────────────────────────────
-            det_embeddings = []
+            # ── Embed detections BEFORE tracking ──────────────────────────
+            # Filter out detections with no valid embedding so that
+            # det_embeddings[i] always corresponds to detections[i]
+            det_embeddings   = []
+            valid_detections = []
+
             for (x1, y1, x2, y2, conf) in detections:
                 face_crop = crop_face(frame, (x1, y1, x2, y2))
                 emb = embedder.get_embedding(face_crop)
-                det_embeddings.append(
-                    emb if emb is not None
-                    else np.zeros(512, dtype=np.float32)
-                )
+                if emb is None:
+                    continue
+                det_embeddings.append(emb)
+                valid_detections.append((x1, y1, x2, y2, conf))
+
+            detections = valid_detections  # keep in sync with embeddings
 
             # ── Tracking ──────────────────────────────────────────────────
             tracks = tracker.update(detections, frame, det_embeddings)
 
-            # ── Registry — with track_id for continuity ───────────────────
+            # ── Registry — use index-aligned embeddings ───────────────────
+            # DeepSort returns tracks in the same order as input detections.
+            # Using the pre-computed embedding avoids a redundant forward pass
+            # and keeps embedding ↔ track alignment correct.
             enriched_tracks = []
+
             for t in tracks:
-                bbox      = t["bbox"]
-                track_id  = t["track_id"]
-                face_crop = crop_face(frame, bbox)
-                embedding = embedder.get_embedding(face_crop)
-                if embedding is None:
+                track_id = t["track_id"]
+                det_idx = t.get("det_idx")
+
+                # If no associated detection → skip (old track)
+                if det_idx is None or det_idx >= len(det_embeddings):
                     continue
 
-                # Pass track_id so registry can use track continuity
-                face_id, is_new = registry.identify(embedding, track_id=track_id)
+                embedding = det_embeddings[det_idx]
+
+                face_id, is_new = registry.identify(
+                    embedding,
+                    track_id=track_id,
+                    bbox=t["bbox"]
+                )
+
+                if face_id is None:
+                    continue
 
                 if not is_new:
                     registry.update_track_embedding(face_id, embedding)
@@ -119,7 +137,7 @@ def run(config_path: str = "config.json"):
                 enriched_tracks.append({
                     **t,
                     "face_id": face_id,
-                    "is_new":  is_new
+                    "is_new": is_new
                 })
 
             # ── Entry / Exit logging ──────────────────────────────────────
@@ -144,7 +162,9 @@ def run(config_path: str = "config.json"):
                     db.get_unique_visitor_count(), display_fps
                 )
                 cv2.imwrite(snap_path, snap_frame)
-                logger.info(f"SNAPSHOT | {snap_path} | {len(enriched_tracks)} face(s)")
+                logger.info(
+                    f"SNAPSHOT | {snap_path} | {len(enriched_tracks)} face(s)"
+                )
                 snapshot_timer = time.time()
 
             # ── Display ───────────────────────────────────────────────────
