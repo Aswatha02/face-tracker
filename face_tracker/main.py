@@ -57,15 +57,21 @@ def run(config_path: str = "config.json"):
     ev_log   = EventLogger(config, db, registry=registry)
 
     # ── Video source ─────────────────────────────────────────────────────────
-    cap  = get_video_source(config)
-    show = config["display"]["show_video"]
+    cap   = get_video_source(config)
+    show  = config["display"]["show_video"]
+    # frame_delay_ms controls playback speed:
+    #   1   = max speed
+    #   40  = ~25fps real-time
+    #   80  = half speed
+    #   150 = slow motion (good for debugging)
+    delay = config["display"].get("frame_delay_ms", 40)
 
     fps_counter = 0
     fps_timer   = time.time()
     display_fps = 0.0
     frame       = None
 
-    logger.info("Processing started. Press 'q' to quit.")
+    logger.info(f"Processing started | frame_delay={delay}ms | Press 'q' to quit.")
 
     try:
         while True:
@@ -128,7 +134,7 @@ def run(config_path: str = "config.json"):
                 vis_frame    = draw_overlay(
                     frame, enriched_tracks, unique_count, display_fps
                 )
-                # Fit to screen — max 1280px wide
+                # Fit to screen — max 1280px wide, keep aspect ratio
                 h_f, w_f = vis_frame.shape[:2]
                 if w_f > 1280:
                     scale     = 1280 / w_f
@@ -137,7 +143,7 @@ def run(config_path: str = "config.json"):
                         interpolation=cv2.INTER_LINEAR
                     )
                 cv2.imshow(config["display"]["window_name"], vis_frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                if cv2.waitKey(delay) & 0xFF == ord("q"):
                     logger.info("User pressed Q — stopping.")
                     break
 

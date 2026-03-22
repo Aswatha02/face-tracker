@@ -6,6 +6,8 @@ YOLOv8-based face detector with multi-layer filtering:
   3. Aspect ratio (faces are roughly square)
   4. Edge margin filter (removes partial heads at frame borders)
   5. Variance filter (removes blank/uniform regions)
+  6. Brightness filter
+  7. Position heuristic (faces in upper 85% of frame)
 """
 
 import cv2
@@ -23,7 +25,7 @@ class FaceDetector:
         self.frame_skip      = det_cfg["frame_skip"]
         self.conf_threshold  = det_cfg["confidence_threshold"]
         self.input_size      = det_cfg["input_size"]
-        self.min_face_size   = det_cfg.get("min_face_size", 30)
+        self.min_face_size   = det_cfg.get("min_face_size", 25)
         self._frame_count    = 0
         self._last_detections = []
 
@@ -47,34 +49,41 @@ class FaceDetector:
         if w < self.min_face_size or h < self.min_face_size:
             return False, f"too small ({w:.0f}x{h:.0f})"
 
-        # ── 2. Aspect ratio — faces are roughly square (0.5 to 1.8) ───────
+        # ── 2. Aspect ratio ───────────────────────────────────────────────
+        # Keep loose (0.4–1.8) — non-frontal/tilted/downward faces
+        # can have unusual aspect ratios
         aspect = w / (h + 1e-6)
-        if aspect < 0.5 or aspect > 1.8:
+        if aspect < 0.4 or aspect > 1.8:
             return False, f"bad aspect ratio ({aspect:.2f})"
 
-        # ── 3. Edge margin — reject detections too close to frame border ──
-        # Partial heads at the top/sides of frame cause false matches
-        margin_x = frame_w * 0.02   # 2% of width
-        margin_y = frame_h * 0.02   # 2% of height
+        # ── 3. Edge margin — reject partial heads at frame borders ────────
+        margin_x = frame_w * 0.02
+        margin_y = frame_h * 0.02
         if x1 < margin_x or y1 < margin_y:
             return False, "too close to top/left edge"
         if x2 > frame_w - margin_x or y2 > frame_h - margin_y:
             return False, "too close to bottom/right edge"
 
         # ── 4. Pixel variance — blank/uniform regions are not faces ───────
-        # A real face crop has texture (eyes, nose, skin variation)
         crop = frame[int(y1):int(y2), int(x1):int(x2)]
         if crop.size == 0:
             return False, "empty crop"
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         variance = gray.var()
-        if variance < 100:
+        if variance < 50:
             return False, f"too uniform (variance={variance:.1f})"
 
         # ── 5. Brightness — reject very dark crops ────────────────────────
         brightness = gray.mean()
         if brightness < 20:
             return False, f"too dark (brightness={brightness:.1f})"
+
+        # ── 6. Position heuristic — faces in upper 85% of frame ──────────
+        # 85% (not 70%) to handle high-mounted cameras where
+        # faces appear lower in the frame
+        face_center_y = (y1 + y2) / 2
+        if face_center_y > frame_h * 0.85:
+            return False, "below face zone (likely legs/body)"
 
         return True, "ok"
 

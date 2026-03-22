@@ -39,8 +39,12 @@ check("onnxruntime",          lambda: __import__("onnxruntime").__version__)
 
 # ── YOLO model file ───────────────────────────────────────────────────────────
 import json
-with open("config.json") as f:
+
+with open("config_fixed.json") as f:
     cfg = json.load(f)
+
+
+
 model_path = cfg["detection"]["model_path"]
 check(f"YOLO model file ({model_path})",
     lambda: "found" if os.path.exists(model_path)

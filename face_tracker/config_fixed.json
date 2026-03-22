@@ -1,0 +1,47 @@
+{
+  "video_source": "videos/record_20250620_183903.mp4",
+  "rtsp_url": "rtsp://your_camera_ip:554/stream",
+  "use_rtsp": false,
+
+  "detection": {
+    "model_path": "yolov8s-face.pt",
+    "frame_skip": 2,
+    "confidence_threshold": 0.55,
+    "input_size": 640,
+    "min_face_size": 40
+  },
+
+  "recognition": {
+    "model_name": "buffalo_l",
+    "similarity_threshold": 0.88,
+    "embedding_size": 512
+  },
+
+  "tracking": {
+    "max_age": 30,
+    "min_hits": 2,
+    "iou_threshold": 0.35,
+    "exit_timeout_frames": 60
+  },
+
+  "logging": {
+    "log_file": "logs/events.log",
+    "entries_dir": "logs/entries",
+    "exits_dir": "logs/exits",
+    "snapshots_dir": "logs/snapshots",
+    "image_format": "jpg",
+    "log_level": "INFO"
+  },
+
+  "database": {
+    "path": "face_tracker.db"
+  },
+
+  "display": {
+    "show_video": true,
+    "draw_boxes": true,
+    "draw_labels": true,
+    "window_name": "Face Tracker",
+    "frame_delay_ms": 40
+  }
+}

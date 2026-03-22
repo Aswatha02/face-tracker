@@ -4,8 +4,8 @@
   "use_rtsp": false,
 
   "detection": {
-    "model_path": "yolov8n-face.pt",
-    "frame_skip": 4,
+    "model_path": "yolov8s-face.pt",
+    "frame_skip": 2,
     "confidence_threshold": 0.5,
     "input_size": 640,
     "min_face_size": 30
@@ -13,15 +13,15 @@
 
   "recognition": {
     "model_name": "buffalo_l",
-    "similarity_threshold": 0.92,
+    "similarity_threshold": 0.88,
     "embedding_size": 512
   },
 
   "tracking": {
-    "max_age": 15,
-    "min_hits": 3,
-    "iou_threshold": 0.3,
-    "exit_timeout_frames": 60
+    "max_age": 30,
+    "min_hits": 2,
+    "iou_threshold": 0.35,
+    "exit_timeout_frames": 150
   },
 
   "logging": {
@@ -30,7 +30,7 @@
     "exits_dir": "logs/exits",
     "snapshots_dir": "logs/snapshots",
     "image_format": "jpg",
-    "log_level": "DEBUG"
+    "log_level": "INFO"
   },
 
   "database": {
@@ -41,6 +41,7 @@
     "show_video": true,
     "draw_boxes": true,
     "draw_labels": true,
-    "window_name": "Face Tracker"
+    "window_name": "Face Tracker",
+    "frame_delay_ms": 40
   }
 }

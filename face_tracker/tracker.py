@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 class FaceTracker:
     def __init__(self, config: dict):
         trk_cfg = config["tracking"]
-        self.max_age = trk_cfg["max_age"]
+        self.max_age = trk_cfg.get("max_age", 120)
         self.min_hits = trk_cfg["min_hits"]
-        self.iou_threshold = trk_cfg["iou_threshold"]
+        self.iou_threshold = trk_cfg.get("iou_threshold", 0.3)
 
         logger.info("Initialising DeepSort tracker")
         self._tracker = DeepSort(
